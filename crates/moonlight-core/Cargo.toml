@@ -1,0 +1,31 @@
+[package]
+name = "moonlight-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Moonlight / Sunshine game-streaming client core, extracted from Tempest."
+links = "moonlight-common-c"
+
+[lib]
+name = "moonlight_core"
+crate-type = ["rlib"]
+
+[dependencies]
+# NVHTTP pairing crypto: the persistent RSA client certificate, the AES key
+# derived from the PIN, the GameStream challenge/response (AES-128-ECB +
+# SHA-256 + RSA sign/verify) and X.509 signature extraction.
+openssl.workspace = true
+# Vendored OpenSSL, built from source. This is what exports DEP_OPENSSL_ROOT /
+# DEP_OPENSSL_INCLUDE to build.rs, so moonlight-common-c's CMake finds a
+# libcrypto without needing one installed on the build machine.
+openssl-sys = { version = "0.9", features = ["vendored"] }
+openssl-src = "300.6"
+# rustls, not native-tls: NVHTTP presents our client certificate to a host
+# whose own certificate is self-signed, which reqwest's rustls backend does
+# with `Identity::from_pem` plus `danger_accept_invalid_certs`.
+reqwest.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+cmake = "0.1"

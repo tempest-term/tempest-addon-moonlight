@@ -1,0 +1,65 @@
+name: build
+
+# Produces one .tpx per target. Signing happens in the Tempest host repository
+# — this repository is public and never holds a signing key. See
+# docs/addon-signing.md there: CI hashes the package and asks Vault to sign the
+# digest, so no key is ever exported to a runner.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      # One broken target should not hide the state of the other five.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: darwin-arm64, rust: aarch64-apple-darwin }
+          - { os: macos-13, target: darwin-x64, rust: x86_64-apple-darwin }
+          - { os: ubuntu-22.04, target: linux-x64, rust: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: linux-arm64, rust: aarch64-unknown-linux-gnu }
+          - { os: windows-2022, target: win32-x64, rust: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: win32-arm64, rust: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # moonlight-common-c, and its own enet / nanors submodules.
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Ubuntu 22.04 ships CMake 3.22; moonlight-common-c and its bundled enet
+      # both want newer. macOS and Windows runners already have one.
+      - name: Install CMake
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: lukka/get-cmake@latest
+
+      # NOTE: no OpenSSL install step on any platform, deliberately. openssl-src
+      # compiles it from source and exports DEP_OPENSSL_ROOT to build.rs, which
+      # hands it to moonlight-common-c's CMake. A system OpenSSL here would only
+      # be a way for the build to differ per runner.
+
+      - run: cargo test --workspace --release --target ${{ matrix.rust }}
+
+      - name: Package
+        shell: bash
+        run: ./scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-${{ matrix.target }}
+          path: dist/*.tpx
+          if-no-files-found: error
