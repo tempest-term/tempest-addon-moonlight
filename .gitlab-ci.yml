@@ -16,7 +16,10 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   VAULT_ADDR: https://vault-http-tempest-rke2.akacdn.app
   VAULT_PKI_MOUNT: tempest-addon-intermediate-ca
+  # The PKI role that issues the certificate, and the JWT role that authorises
+  # asking for one. Different things, easy to confuse.
   VAULT_ROLE: tempest-addon
+  VAULT_JWT_ROLE: tempest-addon-ci
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
 
 # Cargo's registry and the compiled vendor tree (OpenSSL, moonlight-common-c)
@@ -84,22 +87,32 @@ sign:
     VAULT_ID_TOKEN:
       # Must match the `bound_audiences` on the Vault JWT role.
       aud: $VAULT_ADDR
+  # Vault's role is bound to `ref_protected: true`, so this job can only get a
+  # certificate on a protected ref. That is deliberate: anyone who can open a
+  # merge request can run a pipeline, and a pipeline that could sign would make
+  # that the same privilege.
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
   script:
-    # Exchange the job's ID token for a short-lived Vault token. Nothing
-    # long-lived is stored in GitLab.
+    # Exchange the job's ID token for a short-lived Vault token, written to a
+    # file rather than exported: an environment variable is readable from /proc
+    # for the life of the process and is inherited by every child.
     - |
-      export VAULT_TOKEN="$(
-        curl -sS -f --request POST \
-          --data "{\"jwt\":\"$VAULT_ID_TOKEN\",\"role\":\"$VAULT_JWT_ROLE\"}" \
-          "$VAULT_ADDR/v1/auth/jwt/login" | jq -r '.auth.client_token'
-      )"
-      test -n "$VAULT_TOKEN" -a "$VAULT_TOKEN" != null || { echo "Vault login failed"; exit 1; }
+      umask 077
+      curl -sS -f --request POST \
+        --data "{\"jwt\":\"$VAULT_ID_TOKEN\",\"role\":\"$VAULT_JWT_ROLE\"}" \
+        "$VAULT_ADDR/v1/auth/jwt/login" | jq -r '.auth.client_token' > vault.token
+      test -s vault.token && [ "$(cat vault.token)" != null ] || {
+        echo "Vault login failed — is this ref protected?"; exit 1; }
     # The signing scripts and the trust anchors live in the host repository —
     # this one is public and holds neither.
     - git clone --depth 1 "$TEMPEST_DESKTOP_REPO" /tmp/host
-    - CA_BUNDLE=/tmp/host/build/addon/ca_bundle.pem
+    - VAULT_TOKEN_FILE="$PWD/vault.token"
+      CA_BUNDLE=/tmp/host/build/addon/ca_bundle.pem
       TSA_CA_FILE=/tmp/host/build/addon/tsa_roots.pem
       /tmp/host/scripts/addon-pki/ci-sign.sh dist/*.tpx
+    - shred -u vault.token 2>/dev/null || rm -f vault.token
   artifacts:
     paths: [dist/*.tpx]
     expire_in: 1 month
