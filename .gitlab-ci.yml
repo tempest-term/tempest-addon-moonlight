@@ -63,7 +63,7 @@ build:linux-x64:
   extends: .build-linux
   script:
     - cargo test --workspace --release
-    - ./scripts/package.sh
+    - cargo xtask package
 
 # Cross-compiled on the x64 host.
 #
@@ -95,7 +95,7 @@ build:linux-arm64:
     - '[ -f ~/.bashrc ] && source ~/.bashrc'
     - rustup target add aarch64-unknown-linux-gnu
   script:
-    - ./scripts/package.sh
+    - cargo xtask package
   # As in desktop: a cross-build hiccup must not block the native release.
   allow_failure: true
 
@@ -105,14 +105,15 @@ build:darwin-arm64:
   <<: *cargo-cache
   script:
     - cargo test --workspace --release
-    - ./scripts/package.sh
+    - cargo xtask package
   artifacts:
     paths: [dist/*.tpx]
     expire_in: 1 week
 
-# `bash`, not `./`: the Windows runner is a shell executor and its shell is
-# PowerShell. Git for Windows supplies bash, and `package.sh` already knows
-# MINGW/MSYS.
+# Packaging is `cargo xtask package` everywhere, including here. This runner's
+# shell is PowerShell and it has neither `bash` nor `zip` on PATH, and a `.ps1`
+# beside a `.sh` would put the descriptor fields and the container layout in
+# two places that must never disagree.
 #
 # CARGO_TARGET_DIR is desktop's MAX_PATH workaround — vendored OpenSSL's .obj
 # paths overflow MSVC's limit under the default target/ inside the workspace.
@@ -130,7 +131,7 @@ build:win32-x64:
   extends: .build-windows
   script:
     - cargo test --workspace --release
-    - bash scripts/package.sh
+    - cargo xtask package
 
 # Cross-compiled on the x64 Windows runner. Entering the x64→arm64 MSVC dev
 # shell is what retargets cl/armasm64; it persists for the job's single
@@ -147,7 +148,7 @@ build:win32-arm64:
       $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
       Import-Module (Join-Path $vsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
       Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=arm64 -host_arch=amd64'
-    - bash scripts/package.sh
+    - cargo xtask package
   allow_failure: true
 
 # ── Sign ─────────────────────────────────────────────────────────────────

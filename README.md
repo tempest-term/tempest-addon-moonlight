@@ -47,7 +47,7 @@ cargo test                   # includes a link check against the vendored C core
 To produce a distributable package:
 
 ```sh
-./scripts/package.sh         # -> dist/moonlight-<version>-<target>.tpx
+cargo xtask package          # -> dist/moonlight-<version>-<target>.tpx
 ```
 
 That `.tpx` is a container — an outer zip holding `payload.zip` — and it comes

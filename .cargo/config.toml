@@ -1,0 +1,5 @@
+# `cargo xtask package` instead of `cargo run -p xtask -- package`. The alias
+# is what makes the same command work on every runner, which is the entire
+# reason packaging moved out of a shell script.
+[alias]
+xtask = "run --package xtask --"
