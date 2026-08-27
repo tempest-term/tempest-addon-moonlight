@@ -1,0 +1,131 @@
+# Build, sign and publish the Moonlight addon.
+#
+# Signing happens here rather than in the Tempest repository, and no signing
+# key exists anywhere: each job generates a keypair, has Vault certify the CSR
+# with a one-hour TTL, signs, timestamps, and throws the key away with the
+# runner. See docs/addon-signing.md in tempest-desktop.
+#
+# Authentication to Vault is by GitLab's OIDC ID token, not a static
+# VAULT_TOKEN. A CI variable holding a Vault token would be a standing
+# credential that outlives every job and leaks through any `env` dump; an ID
+# token is minted per job, scoped to this project, and expires with it.
+
+stages: [test, package, sign, publish]
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  VAULT_ADDR: https://vault-http-tempest-rke2.akacdn.app
+  VAULT_PKI_MOUNT: tempest-addon-intermediate-ca
+  VAULT_ROLE: tempest-addon
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+
+# Cargo's registry and the compiled vendor tree (OpenSSL, moonlight-common-c)
+# are the whole build time; without this every job recompiles OpenSSL.
+.cargo-cache: &cargo-cache
+  cache:
+    key:
+      files: [Cargo.lock]
+      prefix: $CI_JOB_NAME
+    paths: [.cargo/registry, .cargo/git, target]
+
+# ── Build ────────────────────────────────────────────────────────────────
+# One job per target. `parallel:matrix` is deliberately not used: each target
+# needs a different runner, and the tags are what select it.
+.build:
+  stage: package
+  <<: *cargo-cache
+  script:
+    - cargo test --workspace --release
+    - ./scripts/package.sh
+  artifacts:
+    paths: [dist/*.tpx]
+    expire_in: 1 week
+
+build:linux-x64:
+  extends: .build
+  tags: [linux, x64]
+
+build:linux-arm64:
+  extends: .build
+  tags: [linux, arm64]
+
+build:darwin-arm64:
+  extends: .build
+  tags: [macos, arm64]
+
+build:darwin-x64:
+  extends: .build
+  tags: [macos, x64]
+
+build:win32-x64:
+  extends: .build
+  tags: [windows, x64]
+
+# ── Sign ─────────────────────────────────────────────────────────────────
+# One signing job for every target at once: `ci-sign.sh` issues a single
+# certificate per run and refuses a run whose packages disagree about which
+# addon they are, so signing the whole matrix together is both cheaper and the
+# shape the script expects.
+sign:
+  stage: sign
+  tags: [linux, x64]
+  needs:
+    - job: build:linux-x64
+      artifacts: true
+    - job: build:linux-arm64
+      artifacts: true
+    - job: build:darwin-arm64
+      artifacts: true
+    - job: build:darwin-x64
+      artifacts: true
+    - job: build:win32-x64
+      artifacts: true
+  id_tokens:
+    VAULT_ID_TOKEN:
+      # Must match the `bound_audiences` on the Vault JWT role.
+      aud: $VAULT_ADDR
+  script:
+    # Exchange the job's ID token for a short-lived Vault token. Nothing
+    # long-lived is stored in GitLab.
+    - |
+      export VAULT_TOKEN="$(
+        curl -sS -f --request POST \
+          --data "{\"jwt\":\"$VAULT_ID_TOKEN\",\"role\":\"$VAULT_JWT_ROLE\"}" \
+          "$VAULT_ADDR/v1/auth/jwt/login" | jq -r '.auth.client_token'
+      )"
+      test -n "$VAULT_TOKEN" -a "$VAULT_TOKEN" != null || { echo "Vault login failed"; exit 1; }
+    # The signing scripts and the trust anchors live in the host repository —
+    # this one is public and holds neither.
+    - git clone --depth 1 "$TEMPEST_DESKTOP_REPO" /tmp/host
+    - CA_BUNDLE=/tmp/host/build/addon/ca_bundle.pem
+      TSA_CA_FILE=/tmp/host/build/addon/tsa_roots.pem
+      /tmp/host/scripts/addon-pki/ci-sign.sh dist/*.tpx
+  artifacts:
+    paths: [dist/*.tpx]
+    expire_in: 1 month
+
+# ── Publish ──────────────────────────────────────────────────────────────
+# Tags only. The app fetches by a URL derived from the ABI and target
+# (`addonDownloadUrl`), so the layout here is a contract, not a convention.
+publish:
+  stage: publish
+  tags: [linux, x64]
+  needs: [sign]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - |
+      for f in dist/*.tpx; do
+        target="$(basename "$f" .tpx | sed 's/^moonlight-[^-]*-//')"
+        echo "publishing $target: $(sha256sum "$f" | cut -c1-16)…  $(stat -c%s "$f") bytes"
+        curl -sS -f -T "$f" "$CDN_UPLOAD_BASE/addons/abi-1/moonlight-$target.tpx"
+      done
+    # The app pins each build's size and digest in a table compiled into the
+    # binary (`ADDON_CATALOG`), so publishing is only half of a release — the
+    # other half is a host-side change carrying these values.
+    - |
+      echo "Add to libtempest/src/addon/catalog.ts:"
+      for f in dist/*.tpx; do
+        target="$(basename "$f" .tpx | sed 's/^moonlight-[^-]*-//')"
+        echo "  '$target': { bytes: $(stat -c%s "$f"), sha256: '$(sha256sum "$f" | cut -d' ' -f1)' },"
+      done
