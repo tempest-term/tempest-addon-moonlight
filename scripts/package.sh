@@ -68,10 +68,28 @@ JSON
 mkdir -p "$ROOT/dist"
 OUT="$ROOT/dist/moonlight-$VERSION-$TARGET.tpx"
 rm -f "$OUT"
+
+# A .tpx is a container, not the package itself:
+#
+#   moonlight-1.0.0-darwin-arm64.tpx   (outer zip, STORED)
+#   ├── payload.zip   the actual package
+#   ├── payload.sig   detached CMS over every byte of payload.zip   (added by ci-sign.sh)
+#   └── payload.ts    RFC 3161 timestamp over payload.sig           (added by ci-sign.sh)
+#
+# One file, so the signature cannot be separated from what it signs — the
+# offline-install case is someone copying a single file onto a USB stick. And
+# because the signature covers the payload *as a whole*, there is no manifest
+# of per-entry digests and therefore none of the "entry not listed in the
+# manifest is silently unverified" failure mode that JAR-style signing has.
+#
 # -X: no extra attributes. Resource forks and .DS_Store entries would change
 # the archive bytes per build machine, and the digest is what gets signed.
-(cd "$STAGE" && zip -qrX "$OUT" .)
+(cd "$STAGE" && zip -qrX payload.zip .)
+# -0: the payload is already deflated; compressing it again costs time and
+# saves nothing.
+(cd "$STAGE" && zip -qX0 "$OUT" payload.zip)
 
 echo "$OUT"
+echo "  unsigned — run scripts/addon-pki/ci-sign.sh (tempest-desktop) to add payload.sig + payload.ts"
 ls -lh "$OUT" | awk '{print "  size:  " $5}'
 shasum -a 256 "$OUT" | awk '{print "  sha256:" $1}'
