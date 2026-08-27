@@ -53,13 +53,25 @@ PLATFORM="${TARGET%-*}"
 EXE=moonlight
 [ "$PLATFORM" = win32 ] && EXE=moonlight.exe
 
-# A cross build lands under target/<triple>/, not target/<profile>/.
+# Where cargo actually writes. CARGO_TARGET_DIR is not a nicety on Windows:
+# CI moves it to a short path because vendored OpenSSL's .obj paths overflow
+# MSVC's MAX_PATH under the default target/ inside the workspace.
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+# A cross build lands under <target-dir>/<triple>/, not <target-dir>/<profile>/.
 if [ -n "${CARGO_TARGET:-}" ]; then
   CARGO_ARGS+=(--target "$CARGO_TARGET")
-  BIN="$ROOT/target/$CARGO_TARGET/$PROFILE_DIR/$EXE"
+  BIN="$TARGET_DIR/$CARGO_TARGET/$PROFILE_DIR/$EXE"
 else
-  BIN="$ROOT/target/$PROFILE_DIR/$EXE"
+  BIN="$TARGET_DIR/$PROFILE_DIR/$EXE"
 fi
+
+# `zip` is the one tool here that is not everywhere: Git for Windows does not
+# bundle it. Checked up front so a Windows runner says what to install instead
+# of failing after a full OpenSSL build.
+command -v zip >/dev/null || {
+  echo "error: 'zip' not found. On a Windows runner: choco install zip" >&2
+  exit 1
+}
 
 cargo build "${CARGO_ARGS[@]}" -p moonlight-addon --manifest-path "$ROOT/Cargo.toml"
 [ -f "$BIN" ] || { echo "error: $BIN not built" >&2; exit 1; }
@@ -74,6 +86,9 @@ cp "$ROOT/LICENSE" "$ROOT/README.md" "$STAGE/"
 # integer, deliberately not the version above: most releases do not touch the
 # protocol, and tying the two would force a redownload on every patch.
 #
+# CI overrides it so the number lives in one place there, and its sign job
+# asserts that place against the host's own source before anything is signed.
+#
 # `maxSessions: 1` because moonlight-common-c keeps its connection in C
 # file-scope globals — one stream per process. The host starts a second
 # process for a second session rather than refusing it.
@@ -81,7 +96,7 @@ cat > "$STAGE/descriptor.json" <<JSON
 {
   "id": "moonlight",
   "version": "$VERSION",
-  "abi": 1,
+  "abi": ${ADDON_ABI:-1},
   "target": "$TARGET",
   "displayName": "Moonlight",
   "license": "GPL-3.0-only",

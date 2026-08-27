@@ -21,6 +21,12 @@ variables:
   VAULT_ROLE: tempest-addon
   VAULT_JWT_ROLE: tempest-addon-ci
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  # Must equal `ADDON_ABI` in the host's libtempest/src/addon/types.ts. Hand-
+  # bumped in lockstep with it, never on its own — the app refuses any addon
+  # whose descriptor disagrees, so a mismatch here ships a package nobody can
+  # install. The sign job asserts the two are equal against the real source
+  # rather than trusting this comment.
+  ADDON_ABI: '1'
 
 # Cargo's registry and the compiled vendor tree (OpenSSL, moonlight-common-c)
 # are the whole build time; without this every job recompiles OpenSSL.
@@ -32,10 +38,18 @@ variables:
     paths: [.cargo/registry, .cargo/git, target]
 
 # ── Build ────────────────────────────────────────────────────────────────
-# Runner tags mirror tempest-desktop's: `[linux, shell]`, `[macos]`,
-# `[windows]`. There is deliberately no arm64 runner — desktop cross-compiles
-# every arm64 artifact on its x64 host, and so does this. Tagging `arm64` is
-# what left the first pipeline stuck in pending with no matching runner.
+# The target matrix is tempest-desktop's, exactly: linux x64 + arm64,
+# **darwin arm64 only**, win32 x64 + arm64. An addon the app cannot be running
+# beside is not worth building, and desktop dropped mac x86 for the same reason
+# Apple did.
+#
+# Runner tags are desktop's too — `[linux, shell]`, `[macos]`, `[windows]`.
+# There is no arm64 runner anywhere: every arm64 artifact is cross-compiled on
+# an x64 host. Tagging `arm64` is what left the first pipeline stuck in pending
+# with no matching runner.
+#
+# `image:` on a shell-executor job is inert. It is kept because desktop keeps
+# it, and a diff between the two files should be a real difference.
 .build-linux:
   stage: package
   image: oven/bun:1.3.9
@@ -51,16 +65,39 @@ build:linux-x64:
     - cargo test --workspace --release
     - ./scripts/package.sh
 
+# Cross-compiled on the x64 host.
+#
+# `rustup target add` alone is not enough and fails late and confusingly: it
+# installs the aarch64 *std*, but cargo still links with the host `cc`, and
+# rust-lld reports every object as "incompatible with elf64-x86-64". The
+# toolchain below is what actually retargets the link, and the vendored C
+# (moonlight-common-c, enet, OpenSSL, aws-lc) reads the same CC_/CXX_/AR_ vars
+# through the cc and cmake crates.
+#
+# ONE-TIME runner host setup — already done for tempest-desktop's arm64 jobs,
+# which share this runner:
+#   sudo dpkg --add-architecture arm64 && sudo apt-get update
+#   sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zlib1g-dev:arm64
 build:linux-arm64:
   extends: .build-linux
-  # Cross-compiled on the x64 host. `package.sh` names the artifact from the
-  # build machine, so the target has to be passed explicitly here.
   variables:
     CARGO_TARGET: aarch64-unknown-linux-gnu
     TPX_TARGET: linux-arm64
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+    CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+    AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+    PKG_CONFIG_ALLOW_CROSS: '1'
+    # Without this, pkg-config answers with the host's amd64 .pc files and the
+    # aarch64 binary quietly links amd64 libraries.
+    PKG_CONFIG_LIBDIR: /usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+  before_script:
+    - '[ -f ~/.bashrc ] && source ~/.bashrc'
+    - rustup target add aarch64-unknown-linux-gnu
   script:
-    - rustup target add "$CARGO_TARGET"
     - ./scripts/package.sh
+  # As in desktop: a cross-build hiccup must not block the native release.
+  allow_failure: true
 
 build:darwin-arm64:
   stage: package
@@ -73,31 +110,45 @@ build:darwin-arm64:
     paths: [dist/*.tpx]
     expire_in: 1 week
 
-build:darwin-x64:
+# `bash`, not `./`: the Windows runner is a shell executor and its shell is
+# PowerShell. Git for Windows supplies bash, and `package.sh` already knows
+# MINGW/MSYS.
+#
+# CARGO_TARGET_DIR is desktop's MAX_PATH workaround — vendored OpenSSL's .obj
+# paths overflow MSVC's limit under the default target/ inside the workspace.
+.build-windows:
   stage: package
-  tags: [macos]
-  # Cross-compiled on the arm64 mac, the way desktop builds its x64 CLI.
+  tags: [windows]
   variables:
-    CARGO_TARGET: x86_64-apple-darwin
-    TPX_TARGET: darwin-x64
+    CARGO_TARGET_DIR: 'C:\t'
   <<: *cargo-cache
-  script:
-    - rustup target add "$CARGO_TARGET"
-    - ./scripts/package.sh
   artifacts:
     paths: [dist/*.tpx]
     expire_in: 1 week
 
 build:win32-x64:
-  stage: package
-  tags: [windows]
-  <<: *cargo-cache
+  extends: .build-windows
   script:
     - cargo test --workspace --release
-    - ./scripts/package.sh
-  artifacts:
-    paths: [dist/*.tpx]
-    expire_in: 1 week
+    - bash scripts/package.sh
+
+# Cross-compiled on the x64 Windows runner. Entering the x64→arm64 MSVC dev
+# shell is what retargets cl/armasm64; it persists for the job's single
+# PowerShell process, so the following step inherits it.
+build:win32-arm64:
+  extends: .build-windows
+  variables:
+    CARGO_TARGET: aarch64-pc-windows-msvc
+    TPX_TARGET: win32-arm64
+  before_script:
+    - rustup target add aarch64-pc-windows-msvc
+  script:
+    - |
+      $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+      Import-Module (Join-Path $vsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+      Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=arm64 -host_arch=amd64'
+    - bash scripts/package.sh
+  allow_failure: true
 
 # ── Sign ─────────────────────────────────────────────────────────────────
 # One signing job for every target at once: `ci-sign.sh` issues a single
@@ -115,9 +166,9 @@ sign:
       artifacts: true
     - job: build:darwin-arm64
       artifacts: true
-    - job: build:darwin-x64
-      artifacts: true
     - job: build:win32-x64
+      artifacts: true
+    - job: build:win32-arm64
       artifacts: true
   id_tokens:
     VAULT_ID_TOKEN:
@@ -144,6 +195,16 @@ sign:
     # The signing scripts and the trust anchors live in the host repository —
     # this one is public and holds neither.
     - git clone --depth 1 "$TEMPEST_DESKTOP_REPO" /tmp/host
+    # The one cross-repository invariant, checked against the source instead of
+    # assumed. Everything downstream is keyed on this number: the publish path,
+    # the URL the app derives from it, and the descriptor in every package.
+    - |
+      host_abi=$(sed -n 's/^export const ADDON_ABI = \([0-9]*\);.*/\1/p' \
+        /tmp/host/packages/libtempest/src/addon/types.ts)
+      test -n "$host_abi" || { echo "could not read ADDON_ABI from the host"; exit 1; }
+      [ "$host_abi" = "$ADDON_ABI" ] || {
+        echo "ABI mismatch: this repository builds $ADDON_ABI, the host speaks $host_abi"; exit 1; }
+      echo "ABI $ADDON_ABI matches the host"
     - VAULT_TOKEN_FILE="$PWD/vault.token"
       CA_BUNDLE=/tmp/host/build/addon/ca_bundle.pem
       TSA_CA_FILE=/tmp/host/build/addon/tsa_roots.pem
@@ -167,7 +228,7 @@ publish:
       for f in dist/*.tpx; do
         target="$(basename "$f" .tpx | sed 's/^moonlight-[^-]*-//')"
         echo "publishing $target: $(sha256sum "$f" | cut -c1-16)…  $(stat -c%s "$f") bytes"
-        curl -sS -f -T "$f" "$CDN_UPLOAD_BASE/addons/abi-1/moonlight-$target.tpx"
+        curl -sS -f -T "$f" "$CDN_UPLOAD_BASE/addons/abi-$ADDON_ABI/moonlight-$target.tpx"
       done
     # The app pins each build's size and digest in a table compiled into the
     # binary (`ADDON_CATALOG`), so publishing is only half of a release — the
