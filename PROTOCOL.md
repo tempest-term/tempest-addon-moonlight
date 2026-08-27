@@ -115,7 +115,14 @@ format of its own.
 
 ## Lifecycle
 
-- One process, many sessions. The host spawns one sidecar per addon.
+- One process, many sessions *in the protocol* — but **this addon supports one
+  at a time**. `moonlight-common-c` keeps its connection state in process
+  globals (`VIDEO_SINK`, `NEGOTIATED_FORMAT`, `TERMINATED` in `stream.rs`), so
+  a second concurrent `connect` would take over the first one's video sink.
+  The host spawns one sidecar per addon, not per session, so two Moonlight
+  panes open at once is not currently supported. Lifting it means either a
+  sidecar per session or refusing the second `connect` explicitly — neither is
+  done yet, and today the second one fails confusingly rather than cleanly.
 - Exit 0 on `shutdown` or on a clean stdin EOF (the host quitting without
   saying goodbye is normal). Either way every live session is closed first.
 - Exit 1 on a protocol error, with the reason on stderr.

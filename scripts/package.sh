@@ -22,24 +22,46 @@ VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed -E 's/.*"(.*)".*/\1/')"
 
 # `${platform}-${arch}` in Node's vocabulary, which is what the host's
 # descriptor and download URLs use — not Rust's target triple.
-case "$(uname -s)" in
-  Darwin) PLATFORM=darwin ;;
-  Linux)  PLATFORM=linux ;;
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=win32 ;;
-  *) echo "unsupported platform: $(uname -s)" >&2; exit 1 ;;
+#
+# Cross-compiling is the norm rather than the exception here: there is no arm64
+# CI runner, so every arm64 artifact is built on an x64 host (and darwin-x64 on
+# an arm64 mac). `TPX_TARGET` names what is being built when that differs from
+# what is building it; without it the artifact would be named after the wrong
+# machine and the app would refuse it as `wrong-target`.
+if [ -n "${TPX_TARGET:-}" ]; then
+  TARGET="$TPX_TARGET"
+else
+  case "$(uname -s)" in
+    Darwin) PLATFORM=darwin ;;
+    Linux)  PLATFORM=linux ;;
+    MINGW*|MSYS*|CYGWIN*) PLATFORM=win32 ;;
+    *) echo "unsupported platform: $(uname -s)" >&2; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) ARCH=arm64 ;;
+    x86_64|amd64)  ARCH=x64 ;;
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+  esac
+  TARGET="$PLATFORM-$ARCH"
+fi
+case "$TARGET" in
+  *-*) ;;
+  *) echo "error: TPX_TARGET must look like 'linux-arm64', got '$TARGET'" >&2; exit 1 ;;
 esac
-case "$(uname -m)" in
-  arm64|aarch64) ARCH=arm64 ;;
-  x86_64|amd64)  ARCH=x64 ;;
-  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
-esac
-TARGET="$PLATFORM-$ARCH"
+PLATFORM="${TARGET%-*}"
 
 EXE=moonlight
 [ "$PLATFORM" = win32 ] && EXE=moonlight.exe
 
+# A cross build lands under target/<triple>/, not target/<profile>/.
+if [ -n "${CARGO_TARGET:-}" ]; then
+  CARGO_ARGS+=(--target "$CARGO_TARGET")
+  BIN="$ROOT/target/$CARGO_TARGET/$PROFILE_DIR/$EXE"
+else
+  BIN="$ROOT/target/$PROFILE_DIR/$EXE"
+fi
+
 cargo build "${CARGO_ARGS[@]}" -p moonlight-addon --manifest-path "$ROOT/Cargo.toml"
-BIN="$ROOT/target/$PROFILE_DIR/$EXE"
 [ -f "$BIN" ] || { echo "error: $BIN not built" >&2; exit 1; }
 
 STAGE="$(mktemp -d)"
