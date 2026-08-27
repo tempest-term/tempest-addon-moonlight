@@ -73,6 +73,10 @@ cp "$ROOT/LICENSE" "$ROOT/README.md" "$STAGE/"
 # `abi` must equal the host's ADDON_ABI — see PROTOCOL.md. It is a hand-bumped
 # integer, deliberately not the version above: most releases do not touch the
 # protocol, and tying the two would force a redownload on every patch.
+#
+# `maxSessions: 1` because moonlight-common-c keeps its connection in C
+# file-scope globals — one stream per process. The host starts a second
+# process for a second session rather than refusing it.
 cat > "$STAGE/descriptor.json" <<JSON
 {
   "id": "moonlight",
@@ -83,7 +87,8 @@ cat > "$STAGE/descriptor.json" <<JSON
   "license": "GPL-3.0-only",
   "repository": "https://github.com/gotempest/tempest-addon-moonlight",
   "exec": "bin/$EXE",
-  "provides": { "remoteDesktop": ["moonlight"] }
+  "provides": { "remoteDesktop": ["moonlight"] },
+  "maxSessions": 1
 }
 JSON
 
