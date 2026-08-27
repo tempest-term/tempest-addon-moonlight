@@ -44,6 +44,18 @@ build; addons are a desktop mechanism.
 cargo test                   # includes a link check against the vendored C core
 ```
 
+To produce a distributable package:
+
+```sh
+./scripts/package.sh         # -> dist/moonlight-<version>-<target>.tpx
+```
+
+That `.tpx` is a container — an outer zip holding `payload.zip` — and it comes
+out **unsigned**. Signing is a separate step run from the Tempest repository
+(`scripts/addon-pki/ci-sign.sh`), which adds `payload.sig` and `payload.ts` to
+the same file. Tempest refuses to install a container missing either, so an
+unsigned build is only useful for local inspection.
+
 ## Layout
 
 ```
