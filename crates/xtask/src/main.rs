@@ -104,7 +104,7 @@ fn package(debug: bool) -> Result<(), Err> {
   "target": "{target}",
   "displayName": "Moonlight",
   "license": "GPL-3.0-only",
-  "repository": "https://github.com/gotempest/tempest-addon-moonlight",
+  "repository": "https://github.com/tempest-term/tempest-addon-moonlight",
   "exec": "bin/{exe}",
   "provides": {{ "remoteDesktop": ["moonlight"] }},
   "maxSessions": 1

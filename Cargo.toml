@@ -6,7 +6,7 @@ members = ["crates/moonlight-core", "crates/moonlight-addon", "crates/xtask"]
 version = "1.0.0"
 edition = "2021"
 license = "GPL-3.0-only"
-repository = "https://github.com/gotempest/tempest-addon-moonlight"
+repository = "https://github.com/tempest-term/tempest-addon-moonlight"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
