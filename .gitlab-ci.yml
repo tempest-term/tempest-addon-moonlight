@@ -14,7 +14,15 @@ stages: [test, package, sign, publish]
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
-  VAULT_ADDR: https://vault-http-tempest-rke2.akacdn.app
+  # VAULT_ADDR is a project CI/CD variable, not a value here: this repository is
+  # public, and the address of an internal service does not belong in it. It is
+  # not a credential — the Vault role is bound to this project and to protected
+  # refs, so knowing where Vault lives grants nothing — but publishing an
+  # internal endpoint is free reconnaissance and there is no reason to.
+  #
+  # The mount and role names below stay, because they describe *this* project's
+  # signing scheme rather than the infrastructure hosting it, and they are
+  # documented in the host repository's docs/addon-signing.md anyway.
   VAULT_PKI_MOUNT: tempest-addon-intermediate-ca
   # The PKI role that issues the certificate, and the JWT role that authorises
   # asking for one. Different things, easy to confuse.
@@ -183,6 +191,12 @@ sign:
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_REF_PROTECTED == "true"
   script:
+    # Fail on the missing variable, not on the malformed URL it would produce.
+    # Unset, the login below would POST to `/v1/auth/jwt/login` against nothing
+    # and the error would be about curl, not about configuration.
+    - |
+      test -n "${VAULT_ADDR:-}" || {
+        echo "VAULT_ADDR is not set — add it as a project CI/CD variable"; exit 1; }
     # Exchange the job's ID token for a short-lived Vault token, written to a
     # file rather than exported: an environment variable is readable from /proc
     # for the life of the process and is inherited by every child.
