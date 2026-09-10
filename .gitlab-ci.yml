@@ -230,8 +230,17 @@ sign:
     expire_in: 1 month
 
 # ── Publish ──────────────────────────────────────────────────────────────
-# Tags only. The app fetches by a URL derived from the ABI and target
-# (`addonDownloadUrl`), so the layout here is a contract, not a convention.
+# To a GitHub release, not a CDN of ours.
+#
+# The packages are GPL-3.0 and their source is that same repository, so putting
+# the binaries beside it satisfies GPLv3 §6(d) — equivalent access to the
+# Corresponding Source from the same place the object code is offered — with
+# nothing to host and nothing to keep alive. A CDN bucket would have been one
+# more thing to pay for and one more place for the source link to rot away
+# from the binary.
+#
+# The tag is the release. `moonlight-<version>-<target>.tpx` keeps its full
+# name as the asset name, so a downloaded file still says what it is.
 publish:
   stage: publish
   tags: [linux, shell]
@@ -240,17 +249,60 @@ publish:
     - if: $CI_COMMIT_TAG
   script:
     - |
-      for f in dist/*.tpx; do
-        target="$(basename "$f" .tpx | sed 's/^moonlight-[^-]*-//')"
-        echo "publishing $target: $(sha256sum "$f" | cut -c1-16)…  $(stat -c%s "$f") bytes"
-        curl -sS -f -T "$f" "$CDN_UPLOAD_BASE/addons/abi-$ADDON_ABI/moonlight-$target.tpx"
-      done
-    # The app pins each build's size and digest in a table compiled into the
-    # binary (`ADDON_CATALOG`), so publishing is only half of a release — the
-    # other half is a host-side change carrying these values.
+      test -n "${GITHUB_TOKEN:-}" || {
+        echo "GITHUB_TOKEN is not set — add it as a masked, protected CI/CD variable"; exit 1; }
+      : "${GITHUB_REPO:=tempest-term/tempest-addon-moonlight}"
+    # Create the release, or reuse it if a rerun already made one. GitHub
+    # answers 422 for "already_exists", which is success on a retry and not
+    # something to fail on.
     - |
+      api="https://api.github.com/repos/$GITHUB_REPO"
+      auth=(-H "Authorization: Bearer $GITHUB_TOKEN"
+            -H "Accept: application/vnd.github+json"
+            -H "X-GitHub-Api-Version: 2022-11-28")
+
+      id=$(curl -sS "${auth[@]}" "$api/releases/tags/$CI_COMMIT_TAG" | jq -r '.id // empty')
+      if [ -z "$id" ]; then
+        id=$(jq -n --arg tag "$CI_COMMIT_TAG" \
+               '{tag_name: $tag, name: $tag, draft: false, prerelease: false}' |
+             curl -sS "${auth[@]}" -X POST --data @- "$api/releases" | jq -r '.id // empty')
+      fi
+      test -n "$id" || { echo "could not create or find release $CI_COMMIT_TAG"; exit 1; }
+      echo "release $CI_COMMIT_TAG -> id $id"
+      echo "$id" > release.id
+    # Upload each signed package. A rerun deletes the previous asset first:
+    # GitHub does not replace by name, it happily ends up with two.
+    - |
+      api="https://api.github.com/repos/$GITHUB_REPO"
+      auth=(-H "Authorization: Bearer $GITHUB_TOKEN"
+            -H "Accept: application/vnd.github+json"
+            -H "X-GitHub-Api-Version: 2022-11-28")
+      id=$(cat release.id)
+
+      existing=$(curl -sS "${auth[@]}" "$api/releases/$id/assets")
+      for f in dist/*.tpx; do
+        name="$(basename "$f")"
+        old=$(echo "$existing" | jq -r --arg n "$name" '.[] | select(.name == $n) | .id')
+        [ -n "$old" ] && curl -sS "${auth[@]}" -X DELETE "$api/releases/assets/$old"
+        echo "uploading $name ($(stat -c%s "$f") bytes)"
+        curl -sS -f "${auth[@]}" \
+          -H "Content-Type: application/zip" \
+          --data-binary @"$f" \
+          "https://uploads.github.com/repos/$GITHUB_REPO/releases/$id/assets?name=$name" \
+          > /dev/null
+      done
+    # The app pins each build's URL, size and digest in a table compiled into
+    # the binary (`ADDON_CATALOG`), which is a second check the download must
+    # pass independently of its signature. So publishing is only half of a
+    # release — the other half is a host-side change carrying these values.
+    - |
+      : "${GITHUB_REPO:=tempest-term/tempest-addon-moonlight}"
+      echo
       echo "Add to libtempest/src/addon/catalog.ts:"
       for f in dist/*.tpx; do
+        name="$(basename "$f")"
         target="$(basename "$f" .tpx | sed 's/^moonlight-[^-]*-//')"
-        echo "  '$target': { bytes: $(stat -c%s "$f"), sha256: '$(sha256sum "$f" | cut -d' ' -f1)' },"
+        printf "  '%s': {\n    url: 'https://github.com/%s/releases/download/%s/%s',\n    bytes: %s,\n    sha256: '%s'\n  },\n" \
+          "$target" "$GITHUB_REPO" "$CI_COMMIT_TAG" "$name" \
+          "$(stat -c%s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
       done
