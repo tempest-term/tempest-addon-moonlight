@@ -6,4 +6,4 @@ license.workspace = true
 publish = false
 
 [dependencies]
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
